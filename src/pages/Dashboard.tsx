@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { Phone } from "lucide-react";
 import PrivacyToggle from "@/components/PrivacyToggle";
 import ProtectionPulse from "@/components/ProtectionPulse";
@@ -8,6 +8,9 @@ import FakeCallScreen from "@/components/FakeCallScreen";
 import DistressActive from "@/components/DistressActive";
 import { useAuth } from "@/contexts/AuthContext";
 import { createDistressLog, resolveDistressLog } from "@/lib/distress";
+import { useAudioRecorder } from "@/hooks/useAudioRecorder";
+import { supabase } from "@/integrations/supabase/client";
+import { toast } from "sonner";
 import { LogOut } from "lucide-react";
 
 const Dashboard = () => {
@@ -17,10 +20,29 @@ const Dashboard = () => {
   const [showFakeCall, setShowFakeCall] = useState(false);
   const [distressActive, setDistressActive] = useState(false);
   const [activeLogId, setActiveLogId] = useState<string | null>(null);
+  const { isRecording, startRecording, stopRecording } = useAudioRecorder();
+  const [contactName, setContactName] = useState<string | null>(null);
+
+  // Fetch first emergency contact name for toast
+  useEffect(() => {
+    if (!user) return;
+    supabase
+      .from("emergency_contacts")
+      .select("name")
+      .eq("user_id", user.id)
+      .limit(1)
+      .then(({ data }) => {
+        if (data && data.length > 0) setContactName(data[0].name);
+      });
+  }, [user]);
 
   const handleSOS = useCallback(() => {
+    if (!isMonitoring) {
+      toast.error("Privacy Mode is active. Enable monitoring to use SOS.");
+      return;
+    }
     setShowCountdown(true);
-  }, []);
+  }, [isMonitoring]);
 
   const handleCancelDistress = useCallback(() => {
     setShowCountdown(false);
@@ -29,19 +51,38 @@ const Dashboard = () => {
   const handleExecuteDistress = useCallback(async () => {
     setShowCountdown(false);
     setDistressActive(true);
+
+    // Start audio recording
+    if (isMonitoring) {
+      await startRecording();
+    }
+
     if (user) {
       try {
         const log = await createDistressLog(user.id);
         setActiveLogId(log.id);
+
+        // Show toast with contact name
+        const name = contactName || "your emergency contacts";
+        toast.success(`Emergency Alert Sent! Location shared with ${name} via SMS.`);
       } catch (err) {
         console.error("Failed to create distress log:", err);
+        toast.error("Failed to send emergency alert.");
       }
     }
-  }, [user]);
+  }, [user, isMonitoring, startRecording, contactName]);
 
   const handleStopDistress = useCallback(async () => {
     setDistressActive(false);
-    if (activeLogId) {
+
+    // Stop recording and upload evidence
+    if (activeLogId && user) {
+      try {
+        await stopRecording(user.id, activeLogId);
+        toast.success("Evidence recording saved securely.");
+      } catch (err) {
+        console.error("Failed to upload recording:", err);
+      }
       try {
         await resolveDistressLog(activeLogId, "resolved");
       } catch (err) {
@@ -49,7 +90,7 @@ const Dashboard = () => {
       }
       setActiveLogId(null);
     }
-  }, [activeLogId]);
+  }, [activeLogId, user, stopRecording]);
 
   return (
     <div className="min-h-screen bg-background pb-24">
@@ -71,7 +112,7 @@ const Dashboard = () => {
         <ProtectionPulse isActive={isMonitoring} />
 
         {distressActive ? (
-          <DistressActive isActive onStop={handleStopDistress} />
+          <DistressActive isActive onStop={handleStopDistress} isRecording={isRecording} />
         ) : (
           <SOSButton onPress={handleSOS} disabled={!isMonitoring} />
         )}
