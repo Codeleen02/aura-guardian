@@ -6,12 +6,17 @@ import SOSButton from "@/components/SOSButton";
 import CountdownOverlay from "@/components/CountdownOverlay";
 import FakeCallScreen from "@/components/FakeCallScreen";
 import DistressActive from "@/components/DistressActive";
+import { useAuth } from "@/contexts/AuthContext";
+import { createDistressLog, resolveDistressLog } from "@/lib/distress";
+import { LogOut } from "lucide-react";
 
 const Dashboard = () => {
+  const { user, signOut } = useAuth();
   const [isMonitoring, setIsMonitoring] = useState(true);
   const [showCountdown, setShowCountdown] = useState(false);
   const [showFakeCall, setShowFakeCall] = useState(false);
   const [distressActive, setDistressActive] = useState(false);
+  const [activeLogId, setActiveLogId] = useState<string | null>(null);
 
   const handleSOS = useCallback(() => {
     setShowCountdown(true);
@@ -21,18 +26,44 @@ const Dashboard = () => {
     setShowCountdown(false);
   }, []);
 
-  const handleExecuteDistress = useCallback(() => {
+  const handleExecuteDistress = useCallback(async () => {
     setShowCountdown(false);
     setDistressActive(true);
-    // In real app: write to Supabase, share GPS, start recording
-  }, []);
+    if (user) {
+      try {
+        const log = await createDistressLog(user.id);
+        setActiveLogId(log.id);
+      } catch (err) {
+        console.error("Failed to create distress log:", err);
+      }
+    }
+  }, [user]);
+
+  const handleStopDistress = useCallback(async () => {
+    setDistressActive(false);
+    if (activeLogId) {
+      try {
+        await resolveDistressLog(activeLogId, "resolved");
+      } catch (err) {
+        console.error("Failed to resolve distress log:", err);
+      }
+      setActiveLogId(null);
+    }
+  }, [activeLogId]);
 
   return (
     <div className="min-h-screen bg-background pb-24">
       {/* Header */}
-      <div className="px-5 pt-12 pb-4">
-        <h1 className="font-display text-2xl font-bold text-gradient">Nova Shield</h1>
-        <p className="text-sm text-muted-foreground">Your personal safety companion</p>
+      <div className="flex items-center justify-between px-5 pt-12 pb-4">
+        <div>
+          <h1 className="font-display text-2xl font-bold text-gradient">Nova Shield</h1>
+          <p className="text-sm text-muted-foreground">
+            {user?.email ? `Welcome, ${user.email}` : "Your personal safety companion"}
+          </p>
+        </div>
+        <button onClick={signOut} className="rounded-lg p-2 text-muted-foreground hover:text-foreground">
+          <LogOut className="h-5 w-5" />
+        </button>
       </div>
 
       <div className="space-y-5 px-5">
@@ -40,7 +71,7 @@ const Dashboard = () => {
         <ProtectionPulse isActive={isMonitoring} />
 
         {distressActive ? (
-          <DistressActive isActive onStop={() => setDistressActive(false)} />
+          <DistressActive isActive onStop={handleStopDistress} />
         ) : (
           <SOSButton onPress={handleSOS} disabled={!isMonitoring} />
         )}

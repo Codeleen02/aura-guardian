@@ -1,6 +1,9 @@
-import { useState } from "react";
-import { Plus, Trash2, UserCircle, Phone as PhoneIcon } from "lucide-react";
+import { useState, useEffect } from "react";
+import { Plus, Trash2, UserCircle } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
+import { supabase } from "@/integrations/supabase/client";
+import { useAuth } from "@/contexts/AuthContext";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 
 interface Contact {
   id: string;
@@ -9,25 +12,49 @@ interface Contact {
 }
 
 const Contacts = () => {
-  const [contacts, setContacts] = useState<Contact[]>([
-    { id: "1", name: "Mom", phone: "+1 555-0101" },
-    { id: "2", name: "Best Friend", phone: "+1 555-0202" },
-  ]);
+  const { user } = useAuth();
+  const queryClient = useQueryClient();
   const [showForm, setShowForm] = useState(false);
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
 
-  const addContact = () => {
-    if (!name.trim() || !phone.trim()) return;
-    setContacts(prev => [...prev, { id: Date.now().toString(), name: name.trim(), phone: phone.trim() }]);
-    setName("");
-    setPhone("");
-    setShowForm(false);
-  };
+  const { data: contacts = [], isLoading } = useQuery({
+    queryKey: ["emergency_contacts"],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("emergency_contacts")
+        .select("id, name, phone")
+        .order("created_at", { ascending: true });
+      if (error) throw error;
+      return data as Contact[];
+    },
+    enabled: !!user,
+  });
 
-  const removeContact = (id: string) => {
-    setContacts(prev => prev.filter(c => c.id !== id));
-  };
+  const addMutation = useMutation({
+    mutationFn: async () => {
+      const { error } = await supabase.from("emergency_contacts").insert({
+        user_id: user!.id,
+        name: name.trim(),
+        phone: phone.trim(),
+      });
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["emergency_contacts"] });
+      setName("");
+      setPhone("");
+      setShowForm(false);
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: async (id: string) => {
+      const { error } = await supabase.from("emergency_contacts").delete().eq("id", id);
+      if (error) throw error;
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["emergency_contacts"] }),
+  });
 
   return (
     <div className="min-h-screen bg-background pb-24">
@@ -37,6 +64,8 @@ const Contacts = () => {
       </div>
 
       <div className="space-y-3 px-5">
+        {isLoading && <p className="text-center text-muted-foreground">Loading...</p>}
+        
         <AnimatePresence>
           {contacts.map(contact => (
             <motion.div
@@ -55,7 +84,7 @@ const Contacts = () => {
                 <p className="text-sm text-muted-foreground">{contact.phone}</p>
               </div>
               <button
-                onClick={() => removeContact(contact.id)}
+                onClick={() => deleteMutation.mutate(contact.id)}
                 className="rounded-lg p-2 text-muted-foreground transition-colors hover:bg-danger/10 hover:text-danger"
               >
                 <Trash2 className="h-5 w-5" />
@@ -90,8 +119,9 @@ const Contacts = () => {
                 Cancel
               </button>
               <button
-                onClick={addContact}
-                className="flex-1 rounded-xl gradient-primary py-3 font-display font-semibold text-primary-foreground"
+                onClick={() => addMutation.mutate()}
+                disabled={!name.trim() || !phone.trim()}
+                className="flex-1 rounded-xl gradient-primary py-3 font-display font-semibold text-primary-foreground disabled:opacity-50"
               >
                 Save
               </button>
