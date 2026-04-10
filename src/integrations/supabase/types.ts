@@ -98,6 +98,39 @@ export type Database = {
         }
         Relationships: []
       }
+      safety_zones: {
+        Row: {
+          created_at: string
+          id: string
+          latitude: number
+          longitude: number
+          name: string
+          radius: number
+          user_id: string
+          zone_type: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          latitude: number
+          longitude: number
+          name: string
+          radius?: number
+          user_id: string
+          zone_type?: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          latitude?: number
+          longitude?: number
+          name?: string
+          radius?: number
+          user_id?: string
+          zone_type?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
