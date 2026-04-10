@@ -3,7 +3,10 @@ import { MapContainer, TileLayer, Circle, Polyline, Marker, Popup, useMap } from
 import { LatLngExpression } from "leaflet";
 import "leaflet/dist/leaflet.css";
 import L from "leaflet";
-import { Navigation, Shield, AlertTriangle, Loader2, MapPin } from "lucide-react";
+import { Navigation, Shield, AlertTriangle, Loader2, Plus } from "lucide-react";
+import { supabase } from "@/integrations/supabase/client";
+import { useAuth } from "@/contexts/AuthContext";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 
 // Fix default marker icon
 delete (L.Icon.Default.prototype as any)._getIconUrl;
@@ -15,39 +18,6 @@ L.Icon.Default.mergeOptions({
 
 const FALLBACK_LOCATION: LatLngExpression = [40.7484, -73.9857];
 
-// Generate mock zones relative to user location
-function generateZones(center: [number, number]) {
-  const [lat, lng] = center;
-  return {
-    safeZones: [
-      { center: [lat + 0.004, lng + 0.008] as LatLngExpression, radius: 300, label: "Safe Zone — Well-lit area" },
-      { center: [lat + 0.010, lng] as LatLngExpression, radius: 250, label: "Safe Zone — Police patrol" },
-      { center: [lat - 0.006, lng - 0.003] as LatLngExpression, radius: 200, label: "Safe Zone — Park area" },
-    ],
-    dangerZones: [
-      { center: [lat - 0.003, lng - 0.009] as LatLngExpression, radius: 200, label: "High Incident Area" },
-      { center: [lat + 0.007, lng + 0.016] as LatLngExpression, radius: 180, label: "Caution Zone" },
-    ],
-    safeRoute: [
-      [lat, lng],
-      [lat + 0.002, lng + 0.002],
-      [lat + 0.004, lng + 0.006],
-      [lat + 0.004, lng + 0.008],
-      [lat + 0.007, lng + 0.004],
-      [lat + 0.010, lng],
-    ] as LatLngExpression[],
-    riskyRoute: [
-      [lat, lng],
-      [lat - 0.001, lng - 0.004],
-      [lat - 0.003, lng - 0.009],
-      [lat, lng - 0.012],
-      [lat + 0.007, lng - 0.009],
-      [lat + 0.010, lng],
-    ] as LatLngExpression[],
-  };
-}
-
-// Component to recenter map when location changes
 const RecenterMap = ({ position }: { position: LatLngExpression }) => {
   const map = useMap();
   useEffect(() => {
@@ -66,20 +36,29 @@ const UserLocationMarker = ({ position }: { position: LatLngExpression }) => {
 
   return (
     <Marker position={position} icon={userIcon}>
-      <Popup>
-        <span className="font-semibold">You are here</span>
-      </Popup>
+      <Popup><span className="font-semibold">You are here</span></Popup>
     </Marker>
   );
 };
 
+interface SafetyZone {
+  id: string;
+  name: string;
+  latitude: number;
+  longitude: number;
+  radius: number;
+  zone_type: string;
+}
+
 const MapView = () => {
+  const { user } = useAuth();
+  const queryClient = useQueryClient();
   const [userLocation, setUserLocation] = useState<[number, number] | null>(null);
   const [geoError, setGeoError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [showSafeRoute, setShowSafeRoute] = useState(true);
-  const [showRiskyRoute, setShowRiskyRoute] = useState(true);
   const [showZones, setShowZones] = useState(true);
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [newZone, setNewZone] = useState({ name: "", zone_type: "safe", radius: 200 });
 
   useEffect(() => {
     if (!navigator.geolocation) {
@@ -100,9 +79,50 @@ const MapView = () => {
     );
   }, []);
 
+  const { data: zones = [] } = useQuery({
+    queryKey: ["safety_zones"],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("safety_zones")
+        .select("id, name, latitude, longitude, radius, zone_type")
+        .order("created_at", { ascending: true });
+      if (error) throw error;
+      return data as SafetyZone[];
+    },
+    enabled: !!user,
+  });
+
+  const addZoneMutation = useMutation({
+    mutationFn: async () => {
+      const loc = userLocation ?? [40.7484, -73.9857];
+      const { error } = await supabase.from("safety_zones").insert({
+        user_id: user!.id,
+        name: newZone.name.trim(),
+        latitude: loc[0],
+        longitude: loc[1],
+        radius: newZone.radius,
+        zone_type: newZone.zone_type,
+      });
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["safety_zones"] });
+      setNewZone({ name: "", zone_type: "safe", radius: 200 });
+      setShowAddForm(false);
+    },
+  });
+
+  const deleteZoneMutation = useMutation({
+    mutationFn: async (id: string) => {
+      const { error } = await supabase.from("safety_zones").delete().eq("id", id);
+      if (error) throw error;
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["safety_zones"] }),
+  });
+
   const center: LatLngExpression = userLocation ?? FALLBACK_LOCATION;
-  const loc: [number, number] = userLocation ?? [40.7484, -73.9857];
-  const { safeZones, dangerZones, safeRoute, riskyRoute } = useMemo(() => generateZones(loc), [loc[0], loc[1]]);
+  const safeZones = zones.filter(z => z.zone_type === "safe");
+  const dangerZones = zones.filter(z => z.zone_type === "danger");
 
   return (
     <div className="min-h-screen bg-background pb-24">
@@ -113,57 +133,51 @@ const MapView = () => {
         </p>
       </div>
 
-      {/* Map */}
-      <div className="relative mx-5 overflow-hidden rounded-2xl border border-border" style={{ height: "55vh" }}>
+      <div className="relative mx-5 overflow-hidden rounded-2xl border border-border" style={{ height: "50vh" }}>
         {loading && (
           <div className="absolute inset-0 z-10 flex items-center justify-center bg-background/80">
             <Loader2 className="h-8 w-8 animate-spin text-primary" />
           </div>
         )}
-        <MapContainer
-          center={center}
-          zoom={15}
-          style={{ height: "100%", width: "100%" }}
-          zoomControl={false}
-        >
+        <MapContainer center={center} zoom={15} style={{ height: "100%", width: "100%" }} zoomControl={false}>
           <TileLayer
             attribution='&copy; <a href="https://carto.com/">CARTO</a>'
             url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
           />
-
           <RecenterMap position={center} />
           <UserLocationMarker position={center} />
 
-          {showZones &&
-            safeZones.map((zone, i) => (
-              <Circle
-                key={`safe-${i}`}
-                center={zone.center}
-                radius={zone.radius}
-                pathOptions={{ color: "hsl(150, 60%, 45%)", fillColor: "hsl(150, 60%, 45%)", fillOpacity: 0.15, weight: 2 }}
-              >
-                <Popup>{zone.label}</Popup>
-              </Circle>
-            ))}
+          {showZones && safeZones.map((zone) => (
+            <Circle
+              key={zone.id}
+              center={[zone.latitude, zone.longitude]}
+              radius={zone.radius}
+              pathOptions={{ color: "hsl(150, 60%, 45%)", fillColor: "hsl(150, 60%, 45%)", fillOpacity: 0.15, weight: 2 }}
+            >
+              <Popup>
+                <div>
+                  <p className="font-semibold">{zone.name}</p>
+                  <button onClick={() => deleteZoneMutation.mutate(zone.id)} className="mt-1 text-xs text-red-500 underline">Remove</button>
+                </div>
+              </Popup>
+            </Circle>
+          ))}
 
-          {showZones &&
-            dangerZones.map((zone, i) => (
-              <Circle
-                key={`danger-${i}`}
-                center={zone.center}
-                radius={zone.radius}
-                pathOptions={{ color: "hsl(0, 72%, 55%)", fillColor: "hsl(0, 72%, 55%)", fillOpacity: 0.2, weight: 2 }}
-              >
-                <Popup>{zone.label}</Popup>
-              </Circle>
-            ))}
-
-          {showSafeRoute && (
-            <Polyline positions={safeRoute} pathOptions={{ color: "hsl(150, 60%, 45%)", weight: 5, opacity: 0.8, dashArray: "10, 6" }} />
-          )}
-          {showRiskyRoute && (
-            <Polyline positions={riskyRoute} pathOptions={{ color: "hsl(0, 72%, 55%)", weight: 4, opacity: 0.6, dashArray: "8, 8" }} />
-          )}
+          {showZones && dangerZones.map((zone) => (
+            <Circle
+              key={zone.id}
+              center={[zone.latitude, zone.longitude]}
+              radius={zone.radius}
+              pathOptions={{ color: "hsl(0, 72%, 55%)", fillColor: "hsl(0, 72%, 55%)", fillOpacity: 0.2, weight: 2 }}
+            >
+              <Popup>
+                <div>
+                  <p className="font-semibold">{zone.name}</p>
+                  <button onClick={() => deleteZoneMutation.mutate(zone.id)} className="mt-1 text-xs text-red-500 underline">Remove</button>
+                </div>
+              </Popup>
+            </Circle>
+          ))}
         </MapContainer>
       </div>
 
@@ -171,50 +185,87 @@ const MapView = () => {
       <div className="mx-5 mt-4 space-y-3">
         <div className="flex flex-wrap gap-3">
           <button
-            onClick={() => setShowSafeRoute(!showSafeRoute)}
-            className={`flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${
-              showSafeRoute ? "border-safe/40 bg-safe/10 text-safe" : "border-border text-muted-foreground"
-            }`}
-          >
-            <div className="h-2.5 w-2.5 rounded-full bg-safe" />
-            Safe Route
-          </button>
-          <button
-            onClick={() => setShowRiskyRoute(!showRiskyRoute)}
-            className={`flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${
-              showRiskyRoute ? "border-danger/40 bg-danger/10 text-danger" : "border-border text-muted-foreground"
-            }`}
-          >
-            <div className="h-2.5 w-2.5 rounded-full bg-danger" />
-            Risky Route
-          </button>
-          <button
             onClick={() => setShowZones(!showZones)}
             className={`flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${
               showZones ? "border-primary/40 bg-primary/10 text-primary" : "border-border text-muted-foreground"
             }`}
           >
             <Shield className="h-3 w-3" />
-            Zones
+            Zones ({zones.length})
+          </button>
+          <button
+            onClick={() => setShowAddForm(!showAddForm)}
+            className="flex items-center gap-2 rounded-full border border-primary/40 bg-primary/10 px-3 py-1.5 text-xs font-medium text-primary transition-colors"
+          >
+            <Plus className="h-3 w-3" />
+            Add Zone
           </button>
         </div>
+
+        {showAddForm && (
+          <div className="space-y-3 rounded-2xl border border-primary/30 bg-card p-4">
+            <input
+              value={newZone.name}
+              onChange={e => setNewZone({ ...newZone, name: e.target.value })}
+              placeholder="Zone name"
+              className="w-full rounded-xl border border-border bg-background px-4 py-3 text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none"
+            />
+            <div className="flex gap-3">
+              <button
+                onClick={() => setNewZone({ ...newZone, zone_type: "safe" })}
+                className={`flex-1 rounded-xl border py-2 text-sm font-semibold transition-colors ${
+                  newZone.zone_type === "safe" ? "border-safe bg-safe/10 text-safe" : "border-border text-muted-foreground"
+                }`}
+              >
+                Safe
+              </button>
+              <button
+                onClick={() => setNewZone({ ...newZone, zone_type: "danger" })}
+                className={`flex-1 rounded-xl border py-2 text-sm font-semibold transition-colors ${
+                  newZone.zone_type === "danger" ? "border-danger bg-danger/10 text-danger" : "border-border text-muted-foreground"
+                }`}
+              >
+                Danger
+              </button>
+            </div>
+            <input
+              type="number"
+              value={newZone.radius}
+              onChange={e => setNewZone({ ...newZone, radius: Number(e.target.value) })}
+              placeholder="Radius (meters)"
+              className="w-full rounded-xl border border-border bg-background px-4 py-3 text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none"
+            />
+            <div className="flex gap-3">
+              <button onClick={() => setShowAddForm(false)} className="flex-1 rounded-xl border border-border py-3 font-display font-semibold text-muted-foreground">
+                Cancel
+              </button>
+              <button
+                onClick={() => addZoneMutation.mutate()}
+                disabled={!newZone.name.trim()}
+                className="flex-1 rounded-xl gradient-primary py-3 font-display font-semibold text-primary-foreground disabled:opacity-50"
+              >
+                Add at My Location
+              </button>
+            </div>
+          </div>
+        )}
 
         <div className="grid grid-cols-2 gap-3">
           <div className="rounded-xl border border-safe/20 bg-safe/5 p-3">
             <div className="flex items-center gap-2 text-safe">
               <Navigation className="h-4 w-4" />
-              <span className="text-xs font-semibold">Safe Route</span>
+              <span className="text-xs font-semibold">Safe Zones</span>
             </div>
-            <p className="mt-1 text-lg font-display font-bold text-foreground">12 min</p>
-            <p className="text-xs text-muted-foreground">Well-lit streets</p>
+            <p className="mt-1 text-lg font-display font-bold text-foreground">{safeZones.length}</p>
+            <p className="text-xs text-muted-foreground">Marked safe areas</p>
           </div>
           <div className="rounded-xl border border-danger/20 bg-danger/5 p-3">
             <div className="flex items-center gap-2 text-danger">
               <AlertTriangle className="h-4 w-4" />
-              <span className="text-xs font-semibold">Risky Route</span>
+              <span className="text-xs font-semibold">Danger Zones</span>
             </div>
-            <p className="mt-1 text-lg font-display font-bold text-foreground">8 min</p>
-            <p className="text-xs text-muted-foreground">Passes 2 risk zones</p>
+            <p className="mt-1 text-lg font-display font-bold text-foreground">{dangerZones.length}</p>
+            <p className="text-xs text-muted-foreground">Marked risk areas</p>
           </div>
         </div>
       </div>
