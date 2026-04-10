@@ -1,12 +1,13 @@
 import { motion } from "framer-motion";
-import { Radio, MapPin, Video } from "lucide-react";
+import { Radio, MapPin, Mic, MicOff } from "lucide-react";
 
 interface DistressActiveProps {
   isActive: boolean;
   onStop: () => void;
+  isRecording?: boolean;
 }
 
-const DistressActive = ({ isActive, onStop }: DistressActiveProps) => {
+const DistressActive = ({ isActive, onStop, isRecording }: DistressActiveProps) => {
   if (!isActive) return null;
 
   return (
@@ -30,8 +31,19 @@ const DistressActive = ({ isActive, onStop }: DistressActiveProps) => {
           <span>GPS location shared with emergency contacts</span>
         </div>
         <div className="flex items-center gap-3">
-          <Video className="h-4 w-4 text-danger" />
-          <span>Auto-recording active — uploading evidence</span>
+          {isRecording ? (
+            <>
+              <motion.div animate={{ opacity: [1, 0.3, 1] }} transition={{ duration: 1, repeat: Infinity }}>
+                <Mic className="h-4 w-4 text-danger" />
+              </motion.div>
+              <span>Audio recording active — capturing evidence</span>
+            </>
+          ) : (
+            <>
+              <MicOff className="h-4 w-4 text-muted-foreground" />
+              <span>Microphone unavailable</span>
+            </>
+          )}
         </div>
         <div className="flex items-center gap-3">
           <Radio className="h-4 w-4 text-danger" />
